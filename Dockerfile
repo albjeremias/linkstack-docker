@@ -29,6 +29,7 @@ COPY --from=composer:2.7.6 /usr/bin/composer /usr/bin/composer
 WORKDIR /app
 
 RUN git clone https://github.com/LinkStackOrg/LinkStack.git /app/
+RUN git checkout ${VERSION}
 RUN rm /app/composer.lock
 RUN sed -i "/\"php artisan lang:update\",/d; s|\"echo.> storage/app/ISINSTALLED\"|\"echo '.' > storage/app/ISINSTALLED\"|g" /app/composer.json
 

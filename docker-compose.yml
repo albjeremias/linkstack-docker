@@ -5,6 +5,7 @@ services:
       context: .
       args:
         VERSION: ${VERSION}
+    image: albjeremias/linkstack:${VERSION}
     volumes:
       # - ./env.docker:/var/www/html/env.docker
       - ./storage/:/app/storage"
