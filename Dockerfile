@@ -1,66 +1,93 @@
-FROM alpine:3.23.2
-LABEL maintainer="JulianPrieber"
-LABEL description="LinkStack Docker"
+FROM php:8.3-fpm-alpine as build
+ARG VERSION
 
-EXPOSE 80 443
+RUN apk add --no-cache \
+    zip \
+    libzip-dev \
+    freetype \
+    libjpeg-turbo \
+    libpng \
+    freetype-dev \
+    libjpeg-turbo-dev \
+    libpng-dev \
+    nodejs \
+    npm \
+    7zip \
+    libsodium-dev \
+    bash \
+    git \
+    && docker-php-ext-configure zip \
+    && docker-php-ext-install zip pdo pdo_mysql bcmath opcache sodium \
+    && docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ \
+    && docker-php-ext-install -j$(nproc) gd \
+    && docker-php-ext-enable gd zip pdo pdo_mysql bcmath opcache sodium
 
-# Setup apache and php
-RUN apk --no-cache --update \
-    add apache2 \
-    apache2-ssl \
-    curl \
-    php83-apache2 \
-    php83-bcmath \
-    php83-bz2 \
-    php83-calendar \
-    php83-common \
-    php83-ctype \
-    php83-curl \
-    php83-dom \
-    php83-fileinfo \
-    php83-gd \
-    php83-iconv \
-    php83-json \
-    php83-mbstring \
-    php83-mysqli \
-    php83-mysqlnd \
-    php83-openssl \
-    php83-pdo_mysql \
-    php83-pdo_pgsql \
-    php83-pdo_sqlite \
-    php83-phar \
-    php83-session \
-    php83-xml \
-    php83-tokenizer \
-    php83-zip \
-    php83-xmlwriter \
-    php83-redis \
-    tzdata \
-    && mkdir /htdocs
+# install composer
 
-COPY linkstack /htdocs
-COPY configs/apache2/httpd.conf /etc/apache2/httpd.conf
-COPY configs/apache2/ssl.conf /etc/apache2/conf.d/ssl.conf
-COPY configs/php/php.ini /etc/php83/conf.d/40-custom.ini
+COPY --from=composer:2.7.6 /usr/bin/composer /usr/bin/composer
 
-RUN chown apache:apache /etc/ssl/apache2/server.pem
-RUN chown apache:apache /etc/ssl/apache2/server.key
+WORKDIR /app
 
-RUN chown -R apache:apache /htdocs
-RUN find /htdocs -type d -print0 | xargs -0 chmod 0755
-RUN find /htdocs -type f -print0 | xargs -0 chmod 0644
+RUN git clone https://github.com/LinkStackOrg/LinkStack.git /app/
+RUN rm /app/composer.lock
+RUN sed -i "/\"php artisan lang:update\",/d; s|\"echo.> storage/app/ISINSTALLED\"|\"echo '.' > storage/app/ISINSTALLED\"|g" /app/composer.json
 
-COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/
+RUN chown -R www-data:www-data /app \
+    && chmod -R 775 /app/storage \
+    && chmod -R 775 /app/bootstrap/cache
+## many dependencies on composer.lock are marked as MALWARE ...?
 
-RUN chmod -R 755 /etc/php83 && \
-    chown -R apache:apache /etc/php83
+# install php and node.js dependencies
+RUN composer install --no-dev --prefer-dist \
+    && npm install 
 
+RUN chown -R www-data:www-data /app/vendor \
+    && chmod -R 775 /app/vendor
 
-USER apache:apache
+# stage 2: production stage
+FROM php:8.3-fpm-alpine
 
-HEALTHCHECK CMD curl -f http://localhost -A "HealthCheck" || exit 1
+# install nginx
+RUN apk add --no-cache \
+    zip \
+    libzip-dev \
+    freetype \
+    libjpeg-turbo \
+    libpng \
+    freetype-dev \
+    libjpeg-turbo-dev \
+    libpng-dev \
+    oniguruma-dev \
+    gettext-dev \
+    freetype-dev \
+    nginx \
+    && docker-php-ext-configure zip \
+    && docker-php-ext-install zip pdo pdo_mysql \
+    && docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ \
+    && docker-php-ext-install -j$(nproc) gd \
+    && docker-php-ext-enable gd \
+    && docker-php-ext-install bcmath \
+    && docker-php-ext-enable bcmath \
+    && docker-php-ext-install exif \
+    && docker-php-ext-enable exif \
+    && docker-php-ext-install gettext \
+    && docker-php-ext-enable gettext \
+    && docker-php-ext-install opcache \
+    && docker-php-ext-enable opcache \
+    && rm -rf /var/cache/apk/*
 
-# Set console entry path
-WORKDIR /htdocs
+# copy files from the build stage
+COPY --from=build /app /app
+COPY ./deploy/nginx.conf /etc/nginx/http.d/default.conf
+COPY ./deploy/php.ini "$PHP_INI_DIR/conf.d/app.ini"
 
-CMD ["docker-entrypoint.sh"]
+COPY .env /app/.env
+
+RUN chown www-data:www-data /app/.env
+
+WORKDIR /app
+
+# add all folders where files are being stored that require persistence. if needed, otherwise remove this line.
+# VOLUME ["/var/www/html/storage/app"]
+
+CMD ["sh", "-c", "nginx && php-fpm"]
